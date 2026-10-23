@@ -5,9 +5,12 @@
  * Remote URLs are keyed by origin, local dev by project path.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+
+import { lockSync } from "proper-lockfile";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,14 +122,47 @@ function readStore(): CredentialStore {
 }
 
 function writeStore(store: CredentialStore): void {
-	const dir = getConfigDir();
-	mkdirSync(dir, { recursive: true, mode: 0o700 });
-
 	const path = getCredentialPath();
-	writeFileSync(path, JSON.stringify(store, null, "\t"), {
-		encoding: "utf-8",
-		mode: 0o600, // Owner read/write only
-	});
+	const temporaryPath = `${path}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, JSON.stringify(store, null, "\t"), {
+			encoding: "utf-8",
+			mode: 0o600,
+			flag: "wx",
+		});
+		renameSync(temporaryPath, path);
+	} finally {
+		rmSync(temporaryPath, { force: true });
+	}
+}
+
+function withCredentialLock<T>(update: () => T): T {
+	mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
+	const deadline = Date.now() + 15_000;
+	const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+	let release: () => void;
+	while (true) {
+		try {
+			release = lockSync(getCredentialPath(), { realpath: false });
+			break;
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				!("code" in error) ||
+				error.code !== "ELOCKED" ||
+				Date.now() >= deadline
+			) {
+				throw error;
+			}
+			// Preserve the synchronous credential API while another CLI process writes.
+			Atomics.wait(waitBuffer, 0, 0, 20);
+		}
+	}
+	try {
+		return update();
+	} finally {
+		release();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -149,9 +185,11 @@ export function getCredentials(baseUrl: string): StoredCredential | null {
  */
 export function saveCredentials(baseUrl: string, cred: StoredCredential): void {
 	const key = resolveCredentialKey(baseUrl);
-	const store = readStore();
-	store[key] = cred;
-	writeStore(store);
+	withCredentialLock(() => {
+		const store = readStore();
+		store[key] = cred;
+		writeStore(store);
+	});
 }
 
 /**
@@ -159,13 +197,15 @@ export function saveCredentials(baseUrl: string, cred: StoredCredential): void {
  */
 export function removeCredentials(baseUrl: string): boolean {
 	const key = resolveCredentialKey(baseUrl);
-	const store = readStore();
-	if (key in store) {
-		delete store[key];
-		writeStore(store);
-		return true;
-	}
-	return false;
+	return withCredentialLock(() => {
+		const store = readStore();
+		if (key in store) {
+			delete store[key];
+			writeStore(store);
+			return true;
+		}
+		return false;
+	});
 }
 
 /**
