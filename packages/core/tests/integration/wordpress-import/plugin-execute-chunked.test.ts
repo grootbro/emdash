@@ -22,6 +22,7 @@ import {
 } from "../../../src/astro/routes/api/import/wordpress-plugin/execute.js";
 import type { EmDashHandlers, EmDashManifest } from "../../../src/astro/types.js";
 import { TaxonomyRepository } from "../../../src/database/repositories/taxonomy.js";
+import { UserRepository } from "../../../src/database/repositories/user.js";
 import type { Database } from "../../../src/database/types.js";
 import { importCommentsFromPlugin, type PluginComment } from "../../../src/import/comments.js";
 import type { NormalizedItem } from "../../../src/import/types.js";
@@ -108,6 +109,122 @@ describe("chunked WP plugin import — cross-chunk state", () => {
 			expect(ids.has(null)).toBe(false);
 		}
 	});
+
+	it("recovers guest bylines when a partial plugin import restarts without its cache", async () => {
+		const items = Array.from({ length: 65 }, (_, i) =>
+			makeItem({
+				sourceId: i + 1,
+				slug: `post-${i + 1}`,
+				author: i % 2 ? "author.one" : "authorone",
+			}),
+		);
+		const emdash = makeEmdash(db);
+		const originalBylines = new Map<string, string>();
+		const first = await importContent(
+			items.slice(0, 50),
+			makeConfig(),
+			emdash,
+			manifest,
+			undefined,
+			undefined,
+			originalBylines,
+		);
+		expect(first.result.imported).toBe(50);
+		const recovered = new Map<string, string>();
+		const replay = await importContent(
+			items.slice(0, 50),
+			makeConfig(),
+			emdash,
+			manifest,
+			undefined,
+			undefined,
+			recovered,
+		);
+		expect(replay.result.skipped).toBe(50);
+		const resumed = await importContent(
+			items.slice(50),
+			makeConfig(),
+			emdash,
+			manifest,
+			undefined,
+			undefined,
+			new Map(Object.entries(JSON.parse(JSON.stringify(Object.fromEntries(recovered))))),
+		);
+		expect(resumed.result.imported).toBe(15);
+		expect(await db.selectFrom("_emdash_bylines").select("id").execute()).toHaveLength(2);
+		const posts = await db.selectFrom("ec_post").select(["slug", "primary_byline_id"]).execute();
+		expect(posts).toHaveLength(65);
+		for (const post of posts) {
+			const login = Number(post.slug.split("-")[1]) % 2 ? "authorone" : "author.one";
+			expect(post.primary_byline_id).toBe(originalBylines.get(`${login}:`));
+		}
+	});
+
+	it.each([
+		[null, "first"],
+		["first", null],
+		["first", "second"],
+	] as const)(
+		"respects changed author mappings from %s to %s on restart",
+		async (before, after) => {
+			const users = new UserRepository(db);
+			const firstUser = await users.create({
+				email: "first@example.com",
+				name: "First",
+				role: "author",
+			});
+			const secondUser = await users.create({
+				email: "second@example.com",
+				name: "Second",
+				role: "author",
+			});
+			const userIds = { first: firstUser.id, second: secondUser.id };
+			const oldUserId = before ? userIds[before] : null;
+			const newUserId = after ? userIds[after] : null;
+			const items = [
+				makeItem({ sourceId: 1, slug: "old-post", author: "author" }),
+				makeItem({ sourceId: 2, slug: "new-post", author: "author" }),
+			];
+			const emdash = makeEmdash(db);
+			const oldCache = new Map<string, string>();
+			await importContent(
+				items.slice(0, 1),
+				{
+					...makeConfig(),
+					authorMappings: { author: oldUserId },
+				},
+				emdash,
+				manifest,
+				undefined,
+				undefined,
+				oldCache,
+			);
+			const originalBylineId = oldCache.get(`author:${oldUserId ?? ""}`);
+			const result = await importContent(
+				items,
+				{
+					...makeConfig(),
+					authorMappings: { author: newUserId },
+				},
+				emdash,
+				manifest,
+			);
+			expect(result.result.imported).toBe(1);
+			expect(result.result.skipped).toBe(1);
+			const posts = await db.selectFrom("ec_post").select(["slug", "primary_byline_id"]).execute();
+			expect(posts.find((post) => post.slug === "old-post")?.primary_byline_id).toBe(
+				originalBylineId,
+			);
+			const newBylineId = posts.find((post) => post.slug === "new-post")!.primary_byline_id;
+			expect(newBylineId).not.toBe(originalBylineId);
+			const byline = await db
+				.selectFrom("_emdash_bylines")
+				.select("user_id")
+				.where("id", "=", newBylineId!)
+				.executeTakeFirstOrThrow();
+			expect(byline.user_id).toBe(newUserId);
+		},
+	);
 
 	it("links translations across chunks via the seeded translationGroup map", async () => {
 		const emdash = makeEmdash(db);

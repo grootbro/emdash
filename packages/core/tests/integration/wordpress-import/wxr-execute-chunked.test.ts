@@ -105,10 +105,10 @@ function buildContext(formData: FormData, emdash: Harness["emdash"]) {
 	};
 }
 
-async function prepareChunkedImport(wxr: string, emdash: Harness["emdash"]) {
+async function prepareChunkedImport(wxr: string, emdash: Harness["emdash"], skipExisting = false) {
 	const response = await executePost(
 		// eslint-disable-next-line typescript/no-unsafe-type-assertion
-		buildContext(buildFormData(wxr, { phase: "taxonomy" }), emdash) as any,
+		buildContext(buildFormData(wxr, { phase: "taxonomy", skipExisting }), emdash) as any,
 	);
 	expect(response.status).toBe(200);
 	return response.json();
@@ -214,6 +214,64 @@ describe("WXR execute chunked import", () => {
 			expect(ids.has(null)).toBe(false);
 		}
 	});
+
+	it.each(["restart", "replay"])(
+		"recovers guest bylines after a %s loses chunk state",
+		async (mode) => {
+			const wxr = makeWxr(65)
+				.replace(
+					'<rss version="2.0"',
+					'<rss xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0"',
+				)
+				.replaceAll(
+					/<title>Post (\d+)<\/title>/g,
+					(_match, n: string) =>
+						`<title>Post ${n}</title><dc:creator>${Number(n) % 2 ? "author.one" : "authorone"}</dc:creator>`,
+				);
+			const execute = async (state: { cursor: unknown; chunk: unknown }) => {
+				const response = await executePost(
+					buildContext(
+						buildFormData(wxr, {
+							phase: "content",
+							skipExisting: true,
+							cursor: JSON.stringify(state.cursor),
+							chunk: JSON.stringify(state.chunk),
+						}),
+						harness.emdash,
+					) as any,
+				);
+				expect(response.status).toBe(200);
+				return (await response.json()).data;
+			};
+			const prepared = await prepareChunkedImport(wxr, harness.emdash, true);
+			const first = await execute(prepared.data);
+			expect(first.result.imported).toBe(30);
+			const originalBylines = first.chunk.bylines;
+			let state =
+				mode === "restart"
+					? (await prepareChunkedImport(wxr, harness.emdash, true)).data
+					: prepared.data;
+			let imported = 0;
+			let skipped = 0;
+			do {
+				state = await execute(state);
+				imported += state.result.imported;
+				skipped += state.result.skipped;
+			} while (!state.done);
+			expect(imported).toBe(35);
+			expect(skipped).toBe(30);
+			expect(await harness.db.selectFrom("_emdash_bylines").select("id").execute()).toHaveLength(2);
+			const posts = await harness.db
+				.selectFrom("ec_post")
+				.select(["slug", "primary_byline_id"])
+				.execute();
+			expect(posts).toHaveLength(65);
+			for (const post of posts) {
+				const login = Number(post.slug.split("-")[1]) % 2 ? "author.one" : "authorone";
+				expect(post.primary_byline_id).toBe(originalBylines[`${login}:`]);
+			}
+		},
+	);
 
 	it("imports reusable blocks during finalization", async () => {
 		const wxr = makeWxrWithReusableBlock();

@@ -20,7 +20,7 @@ import { requirePerm } from "#api/authorize.js";
 import { apiError, apiSuccess, handleError } from "#api/error.js";
 import { wxrChunkCursor, wxrChunkState, wxrImportConfig } from "#api/schemas.js";
 import { BylineRepository } from "#db/repositories/byline.js";
-import { relativizeContentLinks, resolveImportByline } from "#import/utils.js";
+import { recoverImportByline, relativizeContentLinks, resolveImportByline } from "#import/utils.js";
 import {
 	attachPostTaxonomies,
 	isWxrTaxonomyConflictError,
@@ -540,6 +540,13 @@ export async function importContent(
 			if (config.skipExisting) {
 				const existing = await contentRepo.findBySlug(collection, slug, postLocale);
 				if (existing) {
+					await recoverImportByline(
+						post.creator,
+						config.authorMappings?.[post.creator ?? ""] ?? undefined,
+						existing.primaryBylineId,
+						bylineRepo,
+						bylineCache,
+					);
 					// Record the translation group mapping so later
 					// translations in this WXR can link to the existing
 					// item. We deliberately trust the WXR's grouping over

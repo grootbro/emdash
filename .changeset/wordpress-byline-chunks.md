@@ -3,4 +3,4 @@
 "@emdash-cms/admin": patch
 ---
 
-Fixes WordPress imports creating duplicate guest authors when the same author appears in multiple content batches. Existing duplicates are unchanged.
+Fixes WordPress imports creating duplicate guest authors across content batches and when restarting a partial import after an interruption. Restart with the same content and author mappings to reuse authors from skipped posts. Existing duplicates are unchanged.

@@ -536,6 +536,23 @@ export async function ensureUniqueBylineSlug(
 	return candidate;
 }
 
+/** Restore author identity from a post skipped during a resumed import. */
+export async function recoverImportByline(
+	authorLogin: string | undefined,
+	mappedUserId: string | undefined,
+	primaryBylineId: string | null,
+	bylineRepo: BylineRepository,
+	cache: Map<string, string>,
+): Promise<void> {
+	if (!authorLogin || !primaryBylineId) return;
+	const cacheKey = `${authorLogin}:${mappedUserId ?? ""}`;
+	if (cache.has(cacheKey)) return;
+	const byline = await bylineRepo.findById(primaryBylineId);
+	if (!byline || byline.userId !== (mappedUserId ?? null)) return;
+	if (!mappedUserId && !byline.isGuest) return;
+	cache.set(cacheKey, byline.id);
+}
+
 /**
  * Resolve (find-or-create) a byline for an imported WordPress author.
  * Caches results in `cache` keyed by `authorLogin:mappedUserId`.

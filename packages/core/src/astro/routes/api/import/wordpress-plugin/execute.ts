@@ -37,7 +37,12 @@ import {
 } from "#import/sources/wordpress-plugin.js";
 import { resolveAndValidateExternalUrl, SsrfError } from "#import/ssrf.js";
 import type { ImportConfig, ImportResult, NormalizedItem } from "#import/types.js";
-import { resolveImportByline, sanitizeCollectionSlug, sanitizeFieldSlug } from "#import/utils.js";
+import {
+	recoverImportByline,
+	resolveImportByline,
+	sanitizeCollectionSlug,
+	sanitizeFieldSlug,
+} from "#import/utils.js";
 import {
 	attachPostTaxonomies,
 	loadTaxonomyPlanFromDb,
@@ -938,6 +943,13 @@ export async function importContent(
 			if (config.skipExisting) {
 				const existing = await contentRepo.findBySlug(collection, slug, item.locale);
 				if (existing) {
+					await recoverImportByline(
+						item.author,
+						config.authorMappings?.[item.author ?? ""] ?? undefined,
+						existing.primaryBylineId,
+						bylineRepo,
+						bylineCache,
+					);
 					// Still track the translation group mapping for later items
 					if (item.translationGroup) {
 						translationGroupMap.set(item.translationGroup, existing.id);
