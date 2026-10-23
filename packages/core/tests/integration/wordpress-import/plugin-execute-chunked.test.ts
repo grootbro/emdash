@@ -70,6 +70,45 @@ describe("chunked WP plugin import — cross-chunk state", () => {
 		await teardownTestDatabase(db);
 	});
 
+	it("reuses guest bylines across serialized content chunks without merging colliding slugs", async () => {
+		let bylines = new Map<string, string>();
+		const emdash = makeEmdash(db);
+		for (const offset of [0, 50]) {
+			const items = Array.from({ length: offset === 0 ? 50 : 11 }, (_, i) => {
+				const id = offset + i + 1;
+				return makeItem({
+					sourceId: id,
+					slug: `post-${id}`,
+					author: id % 2 ? "author.one" : "authorone",
+				});
+			});
+			const result = await importContent(
+				items,
+				makeConfig(),
+				emdash,
+				manifest,
+				undefined,
+				undefined,
+				bylines,
+			);
+			expect(result.result.imported).toBe(items.length);
+			bylines = new Map(Object.entries(JSON.parse(JSON.stringify(Object.fromEntries(bylines)))));
+		}
+		const rows = await db.selectFrom("_emdash_bylines").selectAll().execute();
+		expect(rows).toHaveLength(2);
+		expect(bylines.size).toBe(2);
+		const posts = await db.selectFrom("ec_post").select(["slug", "primary_byline_id"]).execute();
+		for (const parity of [0, 1]) {
+			const ids = new Set(
+				posts
+					.filter((post) => Number(post.slug.split("-")[1]) % 2 === parity)
+					.map((post) => post.primary_byline_id),
+			);
+			expect(ids.size).toBe(1);
+			expect(ids.has(null)).toBe(false);
+		}
+	});
+
 	it("links translations across chunks via the seeded translationGroup map", async () => {
 		const emdash = makeEmdash(db);
 		const translationGroups = new Map<string, string>();

@@ -98,6 +98,7 @@ interface ChunkResponse {
 	chunk?: {
 		idMap?: Record<string, { id: string; collection: string }>;
 		translationGroups?: Record<string, string>;
+		bylines?: Record<string, string>;
 		commentRoots?: Record<string, string>;
 	};
 }
@@ -374,6 +375,7 @@ async function runContentChunk(
 	// Seed translation-group state from earlier chunks so a translation in
 	// this page links to its sibling imported three chunks ago.
 	const translationGroupMap = new Map(Object.entries(body.translationGroups ?? {}));
+	const bylines = new Map(Object.entries(body.bylines ?? {}));
 
 	const { result, contentIdMap, collectionByWpId } = await importContent(
 		page.items,
@@ -382,6 +384,7 @@ async function runContentChunk(
 		manifest,
 		taxonomyPlan,
 		translationGroupMap,
+		bylines,
 	);
 
 	if (taxonomyDefsCreated.length > 0) {
@@ -406,6 +409,7 @@ async function runContentChunk(
 		chunk: {
 			idMap: serializeIdMap(contentIdMap, collectionByWpId),
 			translationGroups: Object.fromEntries(translationGroupMap),
+			bylines: Object.fromEntries(bylines),
 		},
 	};
 }
@@ -809,6 +813,7 @@ export async function importContent(
 	manifest: EmDashManifest,
 	taxonomyPlan: TaxonomyImportPlan | undefined,
 	seedTranslationGroups?: Map<string, string>,
+	bylineCache = new Map<string, string>(),
 ): Promise<{
 	result: ImportResult;
 	contentIdMap: Map<number, string>;
@@ -831,7 +836,6 @@ export async function importContent(
 	// Create content repository for checking existing items
 	const contentRepo = new ContentRepository(emdash.db);
 	const bylineRepo = new BylineRepository(emdash.db);
-	const bylineCache = new Map<string, string>();
 	const schemaRegistry = new SchemaRegistry(emdash.db);
 
 	// Track which (collection, field) pairs have been ensured. Keyed per

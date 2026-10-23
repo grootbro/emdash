@@ -36,6 +36,7 @@ export const wpPluginExecuteBody = z.object({
 		.optional(),
 	/** Source translation group -> EmDash item ID, accumulated across content chunks */
 	translationGroups: z.record(z.string(), z.string().min(1)).optional(),
+	bylines: z.record(z.string(), z.string().min(1)).optional(),
 	/** WP comment ID -> EmDash root comment ID, accumulated across comment chunks */
 	commentRoots: z.record(z.string(), z.string().min(1)).optional(),
 });
@@ -61,6 +62,10 @@ export const wxrChunkCursor = z.object({
 });
 
 export const wxrChunkState = z.object({
+	bylines: z
+		.record(z.string().max(1024), z.string().min(1).max(256))
+		.refine((bylines) => Object.keys(bylines).length <= 100_000, "Too many bylines")
+		.optional(),
 	translationGroups: z
 		.record(z.string().max(1024), z.string().min(1).max(256))
 		.refine((groups) => Object.keys(groups).length <= 100_000, "Too many translation groups"),

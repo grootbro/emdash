@@ -50,6 +50,7 @@ interface WxrChunkCursor {
 /** Cross-chunk state carried by the client. */
 interface WxrChunkState {
 	translationGroups: Record<string, string>;
+	bylines?: Record<string, string>;
 }
 
 /** Chunked response shape mirrors the wordpress-plugin execute endpoint. */
@@ -411,6 +412,7 @@ async function runContentChunk(
 		Object.entries(incomingChunk?.translationGroups ?? {}),
 	);
 
+	const bylines = new Map(Object.entries(incomingChunk?.bylines ?? {}));
 	const result = await importContent(
 		posts,
 		config,
@@ -422,6 +424,7 @@ async function runContentChunk(
 		taxonomyPlan,
 		translationGroupMap,
 		wxr.site.link,
+		bylines,
 	);
 
 	const nextOffset = offset + posts.length;
@@ -432,7 +435,10 @@ async function runContentChunk(
 		result,
 		done,
 		cursor: { offset: nextOffset, source, taxonomiesReady: true },
-		chunk: { translationGroups: Object.fromEntries(translationGroupMap) },
+		chunk: {
+			translationGroups: Object.fromEntries(translationGroupMap),
+			bylines: Object.fromEntries(bylines),
+		},
 	};
 }
 
@@ -470,6 +476,7 @@ export async function importContent(
 	taxonomyPlan: TaxonomyImportPlan,
 	translationGroupMap = new Map<string, string>(),
 	siteUrl = "",
+	bylineCache = new Map<string, string>(),
 ): Promise<ImportResult> {
 	const result: ImportResult = {
 		success: true,
@@ -488,7 +495,6 @@ export async function importContent(
 	// Create content repository for checking existing items
 	const contentRepo = new ContentRepository(emdash.db);
 	const bylineRepo = new BylineRepository(emdash.db);
-	const bylineCache = new Map<string, string>();
 
 	for (const post of posts) {
 		const postType = post.postType || "post";

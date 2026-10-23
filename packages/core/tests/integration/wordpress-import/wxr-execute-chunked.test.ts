@@ -168,6 +168,53 @@ describe("WXR execute chunked import", () => {
 		expect(rows.length).toBe(35);
 	});
 
+	it("keeps guest authors distinct and reuses each byline across three content chunks", async () => {
+		let wxr = makeWxr(61).replace(
+			'<rss version="2.0"',
+			'<rss xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0"',
+		);
+		wxr = wxr.replaceAll(
+			/<title>Post (\d+)<\/title>/g,
+			(_match, n: string) =>
+				`<title>Post ${n}</title><dc:creator>${Number(n) % 2 ? "author.one" : "authorone"}</dc:creator>`,
+		);
+		let state = (await prepareChunkedImport(wxr, harness.emdash)).data;
+		let imported = 0;
+		do {
+			const response = await executePost(
+				buildContext(
+					buildFormData(wxr, {
+						phase: "content",
+						cursor: JSON.stringify(state.cursor),
+						chunk: JSON.stringify(state.chunk),
+					}),
+					harness.emdash,
+				) as any,
+			);
+			expect(response.status).toBe(200);
+			state = (await response.json()).data;
+			imported += state.result.imported;
+		} while (!state.done);
+
+		expect(imported).toBe(61);
+		const bylines = await harness.db.selectFrom("_emdash_bylines").selectAll().execute();
+		expect(bylines).toHaveLength(2);
+		expect(new Set(bylines.map((byline) => byline.slug)).size).toBe(2);
+		const posts = await harness.db
+			.selectFrom("ec_post")
+			.select(["slug", "primary_byline_id"])
+			.execute();
+		for (const parity of [0, 1]) {
+			const ids = new Set(
+				posts
+					.filter((post) => Number(post.slug.split("-")[1]) % 2 === parity)
+					.map((post) => post.primary_byline_id),
+			);
+			expect(ids.size).toBe(1);
+			expect(ids.has(null)).toBe(false);
+		}
+	});
+
 	it("imports reusable blocks during finalization", async () => {
 		const wxr = makeWxrWithReusableBlock();
 		const prepared = await prepareChunkedImport(wxr, harness.emdash);

@@ -208,6 +208,7 @@ interface WpImportCursor {
 interface WpImportChunkState {
 	idMap: Record<string, { id: string; collection: string }>;
 	translationGroups: Record<string, string>;
+	bylines: Record<string, string>;
 	commentRoots: Record<string, string>;
 }
 
@@ -249,6 +250,7 @@ async function executeWpPluginImportChunk(
 			cursor,
 			idMap: state.idMap,
 			translationGroups: state.translationGroups,
+			bylines: state.bylines,
 			commentRoots: state.commentRoots,
 		}),
 	});
@@ -334,7 +336,12 @@ export async function executeWpPluginImport(
 		errors: [],
 		byCollection: {},
 	};
-	const state: WpImportChunkState = { idMap: {}, translationGroups: {}, commentRoots: {} };
+	const state: WpImportChunkState = {
+		idMap: {},
+		translationGroups: {},
+		bylines: {},
+		commentRoots: {},
+	};
 	let comments = 0;
 
 	const runPhase = async (phase: WpPluginImportPhase) => {
@@ -345,6 +352,7 @@ export async function executeWpPluginImport(
 			mergeImportResults(aggregate, chunk.result);
 			Object.assign(state.idMap, chunk.chunk?.idMap);
 			Object.assign(state.translationGroups, chunk.chunk?.translationGroups);
+			Object.assign(state.bylines, chunk.chunk?.bylines);
 			Object.assign(state.commentRoots, chunk.chunk?.commentRoots);
 			comments += (chunk.result.comments?.imported ?? 0) + (chunk.result.comments?.skipped ?? 0);
 			onProgress?.({
@@ -401,6 +409,7 @@ interface WxrImportCursor {
 
 interface WxrImportChunkState {
 	translationGroups: Record<string, string>;
+	bylines?: Record<string, string>;
 }
 
 interface WxrImportChunkResponse {
