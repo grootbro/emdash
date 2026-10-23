@@ -2,6 +2,8 @@
  * Transformers for WordPress core/* blocks
  */
 
+import { parseFragment, serialize, type DefaultTreeAdapterMap } from "parse5";
+
 import {
 	decodeUrlEntities,
 	extractAlt,
@@ -21,11 +23,7 @@ import { attrString, attrNumber, attrBoolean, attrObject } from "../types.js";
 import { sanitizeHref } from "../url.js";
 
 // Regex patterns for core block transformers
-const UOL_TAG_PATTERN = /<[uo]l[^>]*>([\s\S]*)<\/[uo]l>/i;
 const LI_TAG_PATTERN = /<li[^>]*>([\s\S]*?)<\/li>/i;
-const UL_TAG_PATTERN = /<ul[^>]*>([\s\S]*)<\/ul>/i;
-const OL_TAG_PATTERN = /<ol[^>]*>([\s\S]*)<\/ol>/i;
-const NESTED_LIST_PATTERN = /<[uo]l[^>]*>[\s\S]*<\/[uo]l>/gi;
 const P_TAG_PATTERN = /<p[^>]*>([\s\S]*?)<\/p>/gi;
 const P_TAG_SINGLE_PATTERN = /<p[^>]*>([\s\S]*?)<\/p>/i;
 const HREF_PATTERN = /href="([^"]*)"/i;
@@ -40,6 +38,7 @@ const AMP_ENTITY_PATTERN = /&amp;/g;
 const QUOT_ENTITY_PATTERN = /&quot;/g;
 const APOS_ENTITY_PATTERN = /&#039;/g;
 const NBSP_ENTITY_PATTERN = /&nbsp;/g;
+const LIST_START_PATTERN = /^\+?\d+$/;
 
 /**
  * core/paragraph → block with style "normal"
@@ -92,214 +91,154 @@ export const heading: BlockTransformer = (block, _options, context) => {
  *
  * Handles both old format (HTML list) and new format (innerBlocks with list-item)
  */
-export const list: BlockTransformer = (block, _options, context) => {
-	const ordered = block.attrs.ordered === true;
+export const list: BlockTransformer = (block, _options, context) =>
+	convertListBlock(block, 1, context);
+
+type ListElement = DefaultTreeAdapterMap["element"] & { tagName: "ul" | "ol" };
+type ListChild = DefaultTreeAdapterMap["childNode"];
+type ListMetadata = Pick<PortableTextTextBlock, "listId" | "listStart">;
+
+function isListElement(node: ListChild): node is ListElement {
+	return "tagName" in node && (node.tagName === "ul" || node.tagName === "ol");
+}
+
+function normalizeListStart(value: unknown): number | undefined {
+	const number =
+		typeof value === "string" && LIST_START_PATTERN.test(value.trim()) ? Number(value) : value;
+	return typeof number === "number" &&
+		Number.isInteger(number) &&
+		number >= 1 &&
+		number <= 2_147_483_647
+		? number
+		: undefined;
+}
+
+function listMetadata(
+	ordered: boolean,
+	element: ListElement | undefined,
+	context: TransformContext,
+	start?: unknown,
+): ListMetadata {
+	if (!ordered) return {};
+	return {
+		listId: context.generateKey(),
+		listStart:
+			normalizeListStart(start) ??
+			normalizeListStart(element?.attrs.find((attr) => attr.name === "start")?.value) ??
+			1,
+	};
+}
+
+function convertListBlock(
+	block: GutenbergBlock,
+	level: number,
+	context: TransformContext,
+): PortableTextTextBlock[] {
+	const fragment = parseFragment(block.innerHTML);
+	const element = fragment.childNodes.find(isListElement);
+	const ordered =
+		typeof block.attrs.ordered === "boolean" ? block.attrs.ordered : element?.tagName === "ol";
 	const listItem = ordered ? "number" : "bullet";
-
-	// Check for new format (WordPress 6.x) with core/list-item innerBlocks
+	const metadata = listMetadata(ordered, element, context, block.attrs.start);
 	if (block.innerBlocks.length > 0) {
-		return parseListItemBlocks(block.innerBlocks, listItem, 1, context);
+		return parseListItemBlocks(block.innerBlocks, listItem, level, context, metadata);
 	}
+	return parseListItems(
+		element?.childNodes ?? fragment.childNodes,
+		listItem,
+		level,
+		context,
+		metadata,
+	);
+}
 
-	// Old format: HTML content in innerHTML
-	const listMatch = block.innerHTML.match(UOL_TAG_PATTERN);
-	const listContent = listMatch?.[1] || block.innerHTML;
-
-	return parseListItems(listContent, listItem, 1, context);
-};
-
-/**
- * Parse list-item blocks (WordPress 6.x format)
- */
 function parseListItemBlocks(
 	innerBlocks: GutenbergBlock[],
 	listItem: "bullet" | "number",
 	level: number,
 	context: TransformContext,
+	metadata: ListMetadata,
 ): PortableTextTextBlock[] {
 	const blocks: PortableTextTextBlock[] = [];
-
 	for (const itemBlock of innerBlocks) {
 		if (itemBlock.blockName !== "core/list-item") continue;
-
-		// Get text content from the <li> in innerHTML
-		const textMatch = itemBlock.innerHTML.match(LI_TAG_PATTERN);
-		const textContent = textMatch?.[1]?.trim() || "";
-
+		const textContent = itemBlock.innerHTML.match(LI_TAG_PATTERN)?.[1]?.trim() || "";
 		if (textContent) {
-			const { children, markDefs } = context.parseInlineContent(textContent);
-
-			const block: PortableTextTextBlock = {
-				_type: "block",
-				_key: context.generateKey(),
-				style: "normal",
-				listItem,
-				level,
-				children,
-			};
-
-			if (markDefs.length > 0) {
-				block.markDefs = markDefs;
-			}
-
-			blocks.push(block);
+			blocks.push(listTextBlock(textContent, listItem, level, context, metadata));
 		}
-
-		// Handle nested lists in innerBlocks
-		if (itemBlock.innerBlocks.length > 0) {
-			for (const nested of itemBlock.innerBlocks) {
-				if (nested.blockName === "core/list") {
-					const nestedOrdered = nested.attrs.ordered === true;
-					const nestedListItem = nestedOrdered ? "number" : "bullet";
-					blocks.push(
-						...parseListItemBlocks(nested.innerBlocks, nestedListItem, level + 1, context),
-					);
-				}
+		for (const nested of itemBlock.innerBlocks) {
+			if (nested.blockName === "core/list") {
+				blocks.push(...convertListBlock(nested, level + 1, context));
 			}
 		}
 	}
-
 	return blocks;
 }
 
-/**
- * Parse list items from HTML
- */
-function parseListItems(
+function listTextBlock(
 	html: string,
 	listItem: "bullet" | "number",
 	level: number,
 	context: TransformContext,
-): PortableTextTextBlock[] {
-	const blocks: PortableTextTextBlock[] = [];
-
-	// Match <li> elements - need to handle nested lists carefully
-	// Find each top-level <li> by tracking tag depth
-	const liItems = extractTopLevelListItems(html);
-
-	for (const liContent of liItems) {
-		// Check for nested lists
-		const nestedUl = liContent.match(UL_TAG_PATTERN);
-		const nestedOl = liContent.match(OL_TAG_PATTERN);
-
-		// Get text content (excluding nested lists)
-		let textContent = liContent.replace(NESTED_LIST_PATTERN, "").trim();
-
-		if (textContent) {
-			const { children, markDefs } = context.parseInlineContent(textContent);
-
-			const block: PortableTextTextBlock = {
-				_type: "block",
-				_key: context.generateKey(),
-				style: "normal",
-				listItem,
-				level,
-				children,
-			};
-
-			if (markDefs.length > 0) {
-				block.markDefs = markDefs;
-			}
-
-			blocks.push(block);
-		}
-
-		// Process nested lists
-		if (nestedUl?.[1]) {
-			blocks.push(...parseListItems(nestedUl[1], "bullet", level + 1, context));
-		}
-		if (nestedOl?.[1]) {
-			blocks.push(...parseListItems(nestedOl[1], "number", level + 1, context));
-		}
-	}
-
-	return blocks;
+	metadata: ListMetadata,
+): PortableTextTextBlock {
+	const { children, markDefs } = context.parseInlineContent(html);
+	return {
+		_type: "block",
+		_key: context.generateKey(),
+		style: "normal",
+		listItem,
+		level,
+		...metadata,
+		children,
+		...(markDefs.length > 0 ? { markDefs } : {}),
+	};
 }
 
-/**
- * Extract top-level <li> items from HTML, handling nested lists correctly
- */
-function extractTopLevelListItems(html: string): string[] {
-	const items: string[] = [];
-	let depth = 0;
-	let currentItem = "";
-	let inLi = false;
-	let i = 0;
-
-	while (i < html.length) {
-		// Check for opening tags
-		if (html.substring(i, i + 3).toLowerCase() === "<li") {
-			// Find end of tag
-			const tagEnd = html.indexOf(">", i);
-			if (tagEnd === -1) break;
-
-			if (!inLi) {
-				inLi = true;
-				i = tagEnd + 1;
-				continue;
-			} else {
-				// Nested li
-				currentItem += html.substring(i, tagEnd + 1);
-				depth++;
-				i = tagEnd + 1;
-				continue;
-			}
-		}
-
-		// Check for closing </li>
-		if (html.substring(i, i + 5).toLowerCase() === "</li>") {
-			if (depth === 0) {
-				// End of current top-level item
-				items.push(currentItem);
-				currentItem = "";
-				inLi = false;
-				i += 5;
-				continue;
-			} else {
-				// End of nested item
-				currentItem += "</li>";
-				depth--;
-				i += 5;
-				continue;
-			}
-		}
-
-		// Check for nested list tags to track depth
-		if (
-			html.substring(i, i + 3).toLowerCase() === "<ul" ||
-			html.substring(i, i + 3).toLowerCase() === "<ol"
-		) {
-			const tagEnd = html.indexOf(">", i);
-			if (tagEnd !== -1) {
-				currentItem += html.substring(i, tagEnd + 1);
-				i = tagEnd + 1;
-				continue;
-			}
-		}
-
-		if (
-			html.substring(i, i + 5).toLowerCase() === "</ul>" ||
-			html.substring(i, i + 5).toLowerCase() === "</ol>"
-		) {
-			currentItem += html.substring(i, i + 5);
-			i += 5;
-			continue;
-		}
-
-		// Regular character
-		if (inLi) {
-			currentItem += html[i];
-		}
-		i++;
+function withoutNestedLists(node: ListChild, lists: ListElement[]): ListChild[] {
+	if (isListElement(node)) {
+		lists.push(node);
+		return [];
 	}
-
-	// Handle case where closing </li> is missing
-	if (currentItem.trim()) {
-		items.push(currentItem);
+	if ("childNodes" in node) {
+		return [
+			{ ...node, childNodes: node.childNodes.flatMap((child) => withoutNestedLists(child, lists)) },
+		];
 	}
+	return [node];
+}
 
-	// Filter out empty items that may result from whitespace between tags
-	return items.filter((item) => item.trim().length > 0);
+function parseListItems(
+	nodes: ListChild[],
+	listItem: "bullet" | "number",
+	level: number,
+	context: TransformContext,
+	metadata: ListMetadata,
+): PortableTextTextBlock[] {
+	const blocks: PortableTextTextBlock[] = [];
+	for (const item of nodes) {
+		if (!("tagName" in item) || item.tagName !== "li") continue;
+		const nestedLists: ListElement[] = [];
+		const inlineItem = {
+			...item,
+			childNodes: item.childNodes.flatMap((child) => withoutNestedLists(child, nestedLists)),
+		};
+		const html = serialize(inlineItem).trim();
+		if (html) blocks.push(listTextBlock(html, listItem, level, context, metadata));
+		for (const nested of nestedLists) {
+			const ordered = nested.tagName === "ol";
+			blocks.push(
+				...parseListItems(
+					nested.childNodes,
+					ordered ? "number" : "bullet",
+					level + 1,
+					context,
+					listMetadata(ordered, nested, context),
+				),
+			);
+		}
+	}
+	return blocks;
 }
 
 /**
