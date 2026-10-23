@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { handleContentCreate } from "../../../src/api/handlers/content.js";
 import { handleTaxonomyCreate } from "../../../src/api/handlers/taxonomies.js";
 import {
-	importContent,
+	importContent as importContentFromPlugin,
 	type WpPluginImportConfig,
 } from "../../../src/astro/routes/api/import/wordpress-plugin/execute.js";
 import type { EmDashHandlers, EmDashManifest } from "../../../src/astro/types.js";
@@ -28,6 +28,11 @@ import { importCommentsFromPlugin, type PluginComment } from "../../../src/impor
 import type { NormalizedItem } from "../../../src/import/types.js";
 import { loadTaxonomyPlanFromDb } from "../../../src/import/wxr-taxonomies.js";
 import { setupTestDatabaseWithCollections, teardownTestDatabase } from "../../utils/test-db.js";
+
+const importContent: typeof importContentFromPlugin = (...args) => {
+	args[7] ??= "https://source.example";
+	return importContentFromPlugin(...args);
+};
 
 function makeItem(overrides: Partial<NormalizedItem>): NormalizedItem {
 	return {
@@ -70,6 +75,84 @@ describe("chunked WP plugin import — cross-chunk state", () => {
 	afterEach(async () => {
 		await teardownTestDatabase(db);
 	});
+
+	it("does not inherit a different guest author from a skipped slug collision", async () => {
+		const emdash = makeEmdash(db);
+		await importContent(
+			[makeItem({ slug: "welcome", author: "bob" })],
+			makeConfig(),
+			emdash,
+			manifest,
+			undefined,
+		);
+		const original = await db
+			.selectFrom("ec_post")
+			.select(["primary_byline_id"])
+			.where("slug", "=", "welcome")
+			.executeTakeFirstOrThrow();
+		const result = await importContent(
+			[
+				makeItem({ slug: "welcome", author: "alice" }),
+				makeItem({ sourceId: 2, slug: "alice-new", author: "alice" }),
+			],
+			makeConfig(),
+			emdash,
+			manifest,
+			undefined,
+		);
+		expect(result.result.skipped).toBe(1);
+		expect(result.result.imported).toBe(1);
+		const created = await db
+			.selectFrom("ec_post")
+			.select(["primary_byline_id"])
+			.where("slug", "=", "alice-new")
+			.executeTakeFirstOrThrow();
+		expect(created.primary_byline_id).not.toBe(original.primary_byline_id);
+	});
+
+	it.each(["different source", "missing provenance"])(
+		"does not borrow a skipped byline with %s",
+		async (mode) => {
+			const emdash = makeEmdash(db);
+			await importContent(
+				[makeItem({ slug: "welcome", author: "alice" })],
+				makeConfig(),
+				emdash,
+				manifest,
+				undefined,
+			);
+			const original = await db
+				.selectFrom("ec_post")
+				.select("primary_byline_id")
+				.where("slug", "=", "welcome")
+				.executeTakeFirstOrThrow();
+			if (mode === "missing provenance") {
+				await db
+					.deleteFrom("options")
+					.where("name", "=", `wordpress_import_byline:${original.primary_byline_id}`)
+					.execute();
+			}
+			await importContent(
+				[
+					makeItem({ slug: "welcome", author: "alice" }),
+					makeItem({ sourceId: 2, slug: "alice-new", author: "alice" }),
+				],
+				makeConfig(),
+				emdash,
+				manifest,
+				undefined,
+				undefined,
+				undefined,
+				mode === "different source" ? "https://other.example" : "https://source.example",
+			);
+			const created = await db
+				.selectFrom("ec_post")
+				.select("primary_byline_id")
+				.where("slug", "=", "alice-new")
+				.executeTakeFirstOrThrow();
+			expect(created.primary_byline_id).not.toBe(original.primary_byline_id);
+		},
+	);
 
 	it("reuses guest bylines across serialized content chunks without merging colliding slugs", async () => {
 		let bylines = new Map<string, string>();

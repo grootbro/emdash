@@ -125,6 +125,50 @@ describe("WXR execute chunked import", () => {
 		await teardownTestDatabase(harness.db);
 	});
 
+	it("does not inherit a different guest author from a skipped slug collision", async () => {
+		const withAuthor = (count: number, author: string) =>
+			makeWxr(count)
+				.replace(
+					'<rss version="2.0"',
+					'<rss xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0"',
+				)
+				.replaceAll(
+					/<title>Post (\d+)<\/title>/g,
+					(_m, n: string) => `<title>Post ${n}</title><dc:creator>${author}</dc:creator>`,
+				);
+		const execute = async (wxr: string) => {
+			const prep = (await prepareChunkedImport(wxr, harness.emdash, true)).data;
+			const response = await executePost(
+				buildContext(
+					buildFormData(wxr, {
+						phase: "content",
+						skipExisting: true,
+						cursor: JSON.stringify(prep.cursor),
+						chunk: JSON.stringify(prep.chunk),
+					}),
+					harness.emdash,
+				) as any,
+			);
+			expect(response.status).toBe(200);
+			return (await response.json()).data;
+		};
+		await execute(withAuthor(1, "bob"));
+		const original = await harness.db
+			.selectFrom("ec_post")
+			.select("primary_byline_id")
+			.where("slug", "=", "post-1")
+			.executeTakeFirstOrThrow();
+		const result = await execute(withAuthor(2, "alice"));
+		expect(result.result.skipped).toBe(1);
+		expect(result.result.imported).toBe(1);
+		const created = await harness.db
+			.selectFrom("ec_post")
+			.select("primary_byline_id")
+			.where("slug", "=", "post-2")
+			.executeTakeFirstOrThrow();
+		expect(created.primary_byline_id).not.toBe(original.primary_byline_id);
+	});
+
 	it("processes a large WXR in bounded chunks across multiple invocations", async () => {
 		const wxr = makeWxr(35);
 		const prepared = await prepareChunkedImport(wxr, harness.emdash);

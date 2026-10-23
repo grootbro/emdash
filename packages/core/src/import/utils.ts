@@ -510,7 +510,17 @@ export function isTypeCompatible(requiredType: string, existingType: string): bo
 // =============================================================================
 
 import type { BylineRepository } from "../database/repositories/byline.js";
+import type { OptionsRepository } from "../database/repositories/options.js";
 import { slugify as slugifyFn } from "../utils/slugify.js";
+
+interface ImportBylineSource {
+	url: string;
+	options: OptionsRepository;
+}
+
+function importBylineSourceKey(id: string): string {
+	return `wordpress_import_byline:${id}`;
+}
 
 const MAX_SLUG_COLLISION_ATTEMPTS = 1000;
 
@@ -543,13 +553,20 @@ export async function recoverImportByline(
 	primaryBylineId: string | null,
 	bylineRepo: BylineRepository,
 	cache: Map<string, string>,
+	source?: ImportBylineSource,
 ): Promise<void> {
 	if (!authorLogin || !primaryBylineId) return;
 	const cacheKey = `${authorLogin}:${mappedUserId ?? ""}`;
 	if (cache.has(cacheKey)) return;
 	const byline = await bylineRepo.findById(primaryBylineId);
 	if (!byline || byline.userId !== (mappedUserId ?? null)) return;
-	if (!mappedUserId && !byline.isGuest) return;
+	if (!mappedUserId) {
+		if (!byline.isGuest || !source?.url) return;
+		const origin = await source.options.get<{ url: string; authorLogin: string }>(
+			importBylineSourceKey(byline.id),
+		);
+		if (origin?.url !== normalizeUrl(source.url) || origin.authorLogin !== authorLogin) return;
+	}
 	cache.set(cacheKey, byline.id);
 }
 
@@ -563,6 +580,7 @@ export async function resolveImportByline(
 	mappedUserId: string | undefined,
 	bylineRepo: BylineRepository,
 	cache: Map<string, string>,
+	source?: ImportBylineSource,
 ): Promise<string | undefined> {
 	if (!authorLogin) return undefined;
 	const cacheKey = `${authorLogin}:${mappedUserId ?? ""}`;
@@ -587,6 +605,12 @@ export async function resolveImportByline(
 		isGuest: !mappedUserId,
 	});
 
+	if (!mappedUserId && source?.url) {
+		await source.options.set(importBylineSourceKey(created.id), {
+			url: normalizeUrl(source.url),
+			authorLogin,
+		});
+	}
 	cache.set(cacheKey, created.id);
 	return created.id;
 }

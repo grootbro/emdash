@@ -20,6 +20,7 @@ import { requirePerm } from "#api/authorize.js";
 import { apiError, apiSuccess, handleError } from "#api/error.js";
 import { wxrChunkCursor, wxrChunkState, wxrImportConfig } from "#api/schemas.js";
 import { BylineRepository } from "#db/repositories/byline.js";
+import { OptionsRepository } from "#db/repositories/options.js";
 import { recoverImportByline, relativizeContentLinks, resolveImportByline } from "#import/utils.js";
 import {
 	attachPostTaxonomies,
@@ -495,6 +496,7 @@ export async function importContent(
 	// Create content repository for checking existing items
 	const contentRepo = new ContentRepository(emdash.db);
 	const bylineRepo = new BylineRepository(emdash.db);
+	const bylineSource = { url: siteUrl, options: new OptionsRepository(emdash.db) };
 
 	for (const post of posts) {
 		const postType = post.postType || "post";
@@ -546,6 +548,7 @@ export async function importContent(
 						existing.primaryBylineId,
 						bylineRepo,
 						bylineCache,
+						bylineSource,
 					);
 					// Record the translation group mapping so later
 					// translations in this WXR can link to the existing
@@ -610,6 +613,7 @@ export async function importContent(
 				authorId,
 				bylineRepo,
 				bylineCache,
+				bylineSource,
 			);
 
 			// Preserve original WordPress dates using the shared WXR date parser.

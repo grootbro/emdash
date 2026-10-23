@@ -23,6 +23,7 @@ import { handleTaxonomyCreate } from "#api/handlers/taxonomies.js";
 import { isParseError, parseBody } from "#api/parse.js";
 import { wpPluginExecuteBody } from "#api/schemas.js";
 import { BylineRepository } from "#db/repositories/byline.js";
+import { OptionsRepository } from "#db/repositories/options.js";
 import { importCommentsFromPlugin } from "#import/comments.js";
 import { getSource, SiteChallengeError } from "#import/index.js";
 import { importMenusFromPlugin } from "#import/menus.js";
@@ -215,6 +216,9 @@ export const POST: APIRoute = async ({ request, locals }) => {
 			emdash,
 			emdashManifest,
 			taxonomyPlan,
+			undefined,
+			undefined,
+			body.url,
 		);
 
 		// Import navigation menus, resolving item references through the
@@ -390,6 +394,7 @@ async function runContentChunk(
 		taxonomyPlan,
 		translationGroupMap,
 		bylines,
+		body.url,
 	);
 
 	if (taxonomyDefsCreated.length > 0) {
@@ -819,6 +824,7 @@ export async function importContent(
 	taxonomyPlan: TaxonomyImportPlan | undefined,
 	seedTranslationGroups?: Map<string, string>,
 	bylineCache = new Map<string, string>(),
+	siteUrl = "",
 ): Promise<{
 	result: ImportResult;
 	contentIdMap: Map<number, string>;
@@ -841,6 +847,7 @@ export async function importContent(
 	// Create content repository for checking existing items
 	const contentRepo = new ContentRepository(emdash.db);
 	const bylineRepo = new BylineRepository(emdash.db);
+	const bylineSource = { url: siteUrl, options: new OptionsRepository(emdash.db) };
 	const schemaRegistry = new SchemaRegistry(emdash.db);
 
 	// Track which (collection, field) pairs have been ensured. Keyed per
@@ -949,6 +956,7 @@ export async function importContent(
 						existing.primaryBylineId,
 						bylineRepo,
 						bylineCache,
+						bylineSource,
 					);
 					// Still track the translation group mapping for later items
 					if (item.translationGroup) {
@@ -1042,6 +1050,7 @@ export async function importContent(
 				authorId,
 				bylineRepo,
 				bylineCache,
+				bylineSource,
 			);
 
 			// Resolve translation link: if this item has a translationGroup and
