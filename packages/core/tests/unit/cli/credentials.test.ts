@@ -49,10 +49,14 @@ async function runConcurrent(actions: string[]) {
 			});
 			process.send("ready");
 		`;
-		const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
-			env: { ...process.env, XDG_CONFIG_HOME: directory },
-			stdio: ["ignore", "ignore", "pipe", "ipc"],
-		});
+		const child = spawn(
+			process.execPath,
+			["--experimental-strip-types", "--input-type=module", "--eval", script],
+			{
+				env: { ...process.env, XDG_CONFIG_HOME: directory },
+				stdio: ["ignore", "ignore", "pipe", "ipc"],
+			},
+		);
 		let stderr = "";
 		child.stderr!.on("data", (chunk) => {
 			stderr += String(chunk);
@@ -76,10 +80,12 @@ async function runConcurrent(actions: string[]) {
 		});
 		return { child, ready, exited };
 	});
-	try {
+	const startChildren = async () => {
 		await Promise.all(children.map(({ ready }) => ready));
 		for (const { child } of children) child.send("start");
-		await Promise.all(children.map(({ exited }) => exited));
+	};
+	try {
+		await Promise.all([startChildren(), Promise.all(children.map(({ exited }) => exited))]);
 	} finally {
 		for (const { child } of children) if (child.exitCode === null) child.kill();
 	}
